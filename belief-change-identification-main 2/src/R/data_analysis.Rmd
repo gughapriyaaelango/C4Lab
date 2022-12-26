@@ -1,0 +1,262 @@
+---
+title: 'Load and Visualize '
+output:
+  html_document:
+    df_print: paged
+---
+
+In the following, I'll illustrate how to load the raw data and calculate various metrics
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(RcppRoll)
+
+```
+
+The following will of course be specific to your environment
+
+```{r}
+data<-read_csv("./output/tweetjson006_annotated_tweets.csv")
+data
+```
+
+Note that all topic assignments are "topic_X" comments
+
+First, visualizing at different levels of aggregation.  My strategy here is to select the data that I want to manipuate, then pivot, then aggregate.  I'm going to write this code using functions to make things more modular, but you don't have to.
+
+### Prepping the data
+
+The strategy here is to summarize by day in each column, join with a date sequence, pivot, then fill NAs.
+
+```{r}
+
+prep_data<-function(d) {
+  d %>% mutate(day = as.Date(floor_date(tweet_created_at,unit="day"))) %>% group_by(day) %>% summarise_at(vars(starts_with("topic_")),sum)->d
+  seq_dates<-tibble(day = seq.Date(from=min(d$day),to=max(d$day),by="day"))
+  d <- d %>% right_join(seq_dates) %>% select(day, starts_with("topic_")) %>% pivot_longer(names_to = "topic", values_to = "weight", starts_with("topic_")) %>% replace_na(list(weight=0))
+}
+
+
+data.s <- prep_data(data)
+data.s
+```
+
+Looks good!
+
+### Graphing the data
+
+Once again, I'll do this as a function. Note, I'm going to shuffle the colors around here to help me see the topic boundaries.  The default discrete palette is "hue ordered", making hard to see where the boundaries are.
+
+```{r fig.width=15,fig.height=5}
+library(scales)
+library(colorspace)
+
+plot_topics<-function(long_data) {
+  num_topics = length(unique(long_data$topic))
+  
+  # Going to use a trick here to make sure I get distant colors next to one another
+  cols <- hue_pal()(num_topics)
+  half <- 1:ceiling(length(cols)/2)
+  cols <-lighten(muted(as.vector(rbind(cols[half],cols[-half]))),.5)
+  g<-ggplot(long_data)+geom_area(aes(x=day,y=weight,fill=topic)) + scale_fill_manual(values = cols)+guides(fill=guide_legend(ncol=2))
+  return(g)
+}
+plot_topics(data.s)
+```
+
+Ok, so that sort of sucks, so we'll do a little aggregation.  I'm going to add a function here to bin the data.  Also adding a normalization parameter if I want to look at proportions.
+
+```{r fig.width=15, fig.height=5}
+bin_data<-function(long_data,num_days,normalize = F) {
+  d<- long_data%>% ungroup() %>% mutate(index = floor(as.numeric(day - min(day)) / num_days)) %>% group_by(index,topic) %>% summarise(weight = sum(weight),day = min(day)) %>% ungroup() %>% select(-index)
+   if (normalize) {
+    d %>% group_by(day) %>% mutate(weight = weight / sum(weight))-> d
+  }
+  return(d)
+}
+
+binned_data <- bin_data(data.s,7)
+plot_topics(binned_data)+ggtitle("Binning by 7 days")
+```
+Ok, this is visually a bit jarring, but I can begin to see the individual topics.  Let's look at a few more.
+
+```{r fig.width=15, fig.height=5}
+binned_data <- bin_data(data.s,15)
+plot_topics(binned_data)+ggtitle("Binning by 15 days")
+```
+
+```{r fig.width=15, fig.height=5}
+binned_data <- bin_data(data.s,15,T)
+plot_topics(binned_data)+ggtitle("Binning by 15 days,normalized")
+```
+I notice some interesting variance in topic 5 and topic 3 in the early part of 2020, but otherwise, nothing tremendously useful.  Might be nice to label the topics right on the graph, but we can do that later. See [this stack over flow post](https://stackoverflow.com/questions/10393956/add-direct-labels-to-ggplot2-geom-area-chart).
+
+Also, it occurs to me that I could smooth this out quite a bit by rolling a window over the data.  I'm going to use RCppRoll, and I'll use mean values rather than sums
+
+```{r}
+roll_data<-function(long_data,win_size = 5, by = 1, normalize = F) {
+  # To make life easier, I'm going to pivot my long data to wide
+  wd<-pivot_wider(long_data,names_from = topic,values_from = weight) %>% arrange(day)
+  rolled<-as_tibble(apply(wd %>% select(starts_with("topic_")),2,function(x) roll_mean(x,n = win_size,by = by)))
+
+  win_ends <- roll_max(1:nrow(wd),n=win_size,by=by)
+
+  rolled$day = wd$day[win_ends]
+  r<-rolled %>% select(day,everything()) %>% pivot_longer(names_to = "topic", values_to = "weight", starts_with("topic_"))
+  if (normalize) {
+    r %>% group_by(day) %>% mutate(weight = weight / sum(weight))-> r
+  }
+  return(r)
+  
+}
+
+roll_data(data.s,7,1)
+```
+Looks ok.  Let's try it out.  Expect to see much smoother graph.
+
+```{r fig.width=15, fig.height=5}
+rolled_data <- roll_data(data.s,15,1)
+plot_topics(rolled_data)+ggtitle("Rolling by 15 days")
+```
+Double checking - if we advance by 15 days at a time, this should look very similar to the binned data
+
+```{r fig.width=15, fig.height=5}
+rolled_data <- roll_data(data.s,15,15)
+plot_topics(rolled_data)+ggtitle("Rolling by 15 days, delta = 15")
+```
+
+Great, finally, with normalization
+
+```{r fig.width=15, fig.height=5}
+rolled_data <- roll_data(data.s,15,1, T)
+plot_topics(rolled_data)+ggtitle("Rolling by 15 days, delta = 1, normalized")
+```
+
+### Calculate Weighted Jaccards
+
+Using the above, we'll create a weighted jaccards function
+
+```{r}
+weighted_jaccard<-function(x,y) {
+  n<-sum(pmin(x,y))
+  d<-sum(pmax(x,y))
+  ifelse(d==0,0,n/d)
+}
+
+# Presume our data has already been binned / rolled
+calc_topic_churn<-function(long_data) {
+  long_data %>% group_by(topic) %>% arrange(day,.by_group = TRUE) %>% mutate(lagged_weights = lag(weight,1,order_by = day)) -> lagged_data
+  #return(lagged_data)
+  lagged_data %>% filter(!is.na(lagged_weights)) %>% group_by(day) %>% summarise(jaccard = weighted_jaccard(weight,lagged_weights))
+}
+
+calc_topic_churn(data.s)
+```
+Looks good, so checking plotting
+```{r fig.width=15, fig.height=5}
+
+ggplot(calc_topic_churn(data.s))+geom_line(aes(day,jaccard))
+
+```
+Now with binning
+```{r fig.width=15, fig.height=5}
+
+rolled_data<-roll_data(data.s,7,by=7)
+ggplot(calc_topic_churn(rolled_data))+geom_line(aes(day,jaccard))+theme_minimal()+ylim(0,1)
+
+```
+
+### Cosine similarity
+
+We can do the same thing with cosine similarity.
+
+```{r}
+cosine_similarity<-function(x,y) {
+  if (length(x) != length(y)) {
+    stop("x and y must be equal length vectors")
+  }
+  n = sum(x*y)
+  d = sqrt(sum(x^2))*sqrt(sum(y^2))
+  ifelse(d==0,0,n/d)
+}
+
+# Presume our data has already been binned / rolled
+calc_cosine_similarity<-function(long_data) {
+  long_data %>% group_by(topic) %>% arrange(day,.by_group = TRUE) %>% mutate(lagged_weights = lag(weight,1,order_by = day)) -> lagged_data
+  #return(lagged_data)
+  lagged_data %>% filter(!is.na(lagged_weights)) %>% group_by(day) %>% summarise(similarity = cosine_similarity(weight,lagged_weights))
+}
+
+calc_cosine_similarity(data.s)
+```
+
+Looks good. Plotting as before, comparing the two.
+
+```{r fig.width=15, fig.height=5}
+
+ggplot(calc_cosine_similarity(data.s))+geom_line(aes(day,similarity))+theme_minimal()+ylim(0,1)+ggtitle("Cosine similarity")
+ggplot(calc_topic_churn(data.s))+geom_line(aes(day,jaccard))+theme_minimal()+ylim(0,1)+ggtitle("Jaccard")
+
+```
+```{r fig.width=15, fig.height=5}
+
+rolled_data<-roll_data(data.s,7,7)
+
+ggplot(calc_cosine_similarity(rolled_data))+geom_line(aes(day,similarity))+theme_minimal()+ylim(0,1)+ggtitle("Cosine similarity")
+ggplot(calc_topic_churn(rolled_data))+geom_line(aes(day,jaccard))+theme_minimal()+ylim(0,1)+ggtitle("Jaccard")
+
+
+```
+
+### Looking at entropy
+
+One last potential measure here - we'll have a look at entropy.  Note that entropy is calculated within a window, rather than by comparing two windows.  Also, entropy is not normalized.
+
+```{r}
+entropy<-function(x,base=exp(1)) {
+  p = x/sum(x)
+  -sum(p*log(p,base))  
+}
+
+# Presume our data has already been binned / rolled
+calc_entropy<-function(long_data) {
+  long_data %>% group_by(day) %>% summarise(entropy = entropy(weight))
+}
+
+calc_entropy(data.s)
+```
+```{r fig.width=15, fig.height=5}
+ggplot(calc_entropy(data.s))+geom_line(aes(day,entropy))+theme_minimal()+ggtitle("Entropy")
+```
+I find this a little unintuitive though, so using the definition of skew from Introne & Goggins (2015)
+
+```{r}
+skew<-function(x) {
+  if (length(x)==0) {
+    return(0)
+  } else {
+    p = x/sum(x)
+    1 - exp(-sum(p*log(p)))/length(x)
+  }
+}
+
+# Presume our data has already been binned / rolled
+calc_skew<-function(long_data) {
+  long_data %>% group_by(day) %>% summarise(skew = skew(weight))
+}
+
+calc_skew(data.s)
+```
+
+```{r fig.width=15, fig.height=5}
+ggplot(calc_skew(data.s))+geom_line(aes(day,skew))+ylim(0,1)+theme_minimal()+ggtitle("Skew")
+```
+Great.  This indicates that there's a pretty even balance here across the topics over time.
+
+```{r fig.width=15, fig.height=5}
+rolled_data<-roll_data(data.s,7,1)
+
+ggplot(calc_skew(rolled_data))+geom_line(aes(day,skew))+ylim(0,1)+theme_minimal()+ggtitle("Skew")
+```

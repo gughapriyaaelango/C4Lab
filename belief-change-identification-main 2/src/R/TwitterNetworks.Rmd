@@ -1,0 +1,349 @@
+---
+title: "TwitterNetworks"
+author: "Yiqi Li"
+date: "2/24/2022"
+output: html_document
+---
+Important Google links:
+https://docs.google.com/spreadsheets/d/1hKYBLE7YCXpmMWOKcjHUHnLdmmnOVfKwMY36_8PMG0Y/edit#gid=1519039184
+
+https://docs.google.com/spreadsheets/d/1SgOANuyzLyxS9V5MZMWJPxqZXEeOIAAHwNSCFfLldRU/edit#gid=456669455
+
+https://docs.google.com/spreadsheets/d/1OLSyfG94uZGGR_SCujWKJQDzGGUvlxktCOBM8A3w26M/edit#gid=1207703933 
+12 new people
+
+https://docs.google.com/spreadsheets/d/1H6y3PJcE-zh1Ing72Rq6q2ZRFmHPVoIC5U_6Cgl7I3Y/edit#gid=0
+50people
+Json: https://drive.google.com/drive/u/2/folders/14bsRuGizio89KCP5hkYdOiwqAt2B5XcY
+
+
+```{r}
+install.packages("stringr")
+library(stringr)
+```
+#Read in files
+```{r}
+path="C:/Users/82419/OneDrive - Syracuse University/2021Fall/FAship/Twitter_R/TwitterNetworks/Excel Files of Tweets"
+allfiles<-list.files(path=path, pattern= "_retweets.xlsx")
+library(readxl)
+retweet_data <- read_excel(paste(path,allfiles[1],sep = "/"))#change [1] to [2] [3] [4]... accordingly if you want to read in a separate user's file
+max(as.Date(retweet_data$tweet_created_at))
+min(as.Date(retweet_data$tweet_created_at))
+
+#compare network changes using the granularity of "week"
+Week <- as.Date(cut(as.Date(retweet_data$tweet_created_at), "week"))#week start on Monday
+
+retweet_data$week<-Week
+Keywords<-c('RT @')
+retweet_data$receiver<-NA
+for (i in (1: length(retweet_data$tweet_text))){
+  receiver<-str_extract_all(retweet_data$tweet_text[i], "(?<=@)\\w+",simplify = FALSE)
+  retweet_data$receiver[i]<-receiver
+}
+```
+##Network size (excluding ego) for each week
+```{r}
+newdata<-data.frame()
+uniqueweek<-unique(Week)
+#creating edgelists for ego nets
+for (i in (1:length(uniqueweek))){
+  data<-subset(retweet_data,as.Date(retweet_data$week)==as.Date(uniqueweek[i]))
+  alter<-c(unlist(data$receiver))
+  edgelist<-cbind(tolower(retweet_data$username[1]),alter,as.character(uniqueweek[i]))
+  newdata<-rbind(edgelist,newdata)
+}
+size<-vector()
+for (i in (1:length(uniqueweek))){
+  data<-subset(newdata,as.Date(newdata$V3)==as.Date(uniqueweek[i]))
+  size<-append(size,nrow(data[!(tolower(retweet_data$username[1])%in%tolower(data$alter))]))
+}
+size_month<-as.data.frame(cbind(size,as.character(uniqueweek)))
+size_month$V2 <- as.Date(size_month$V2)
+plot(size_month$V2,size_month$size,type="o")
+```
+##Total number of unique users interacted for each unique week
+```{r}
+uniquesize<-vector()
+for (i in (1:length(uniqueweek))){
+  data<-subset(newdata,as.Date(newdata$V3)==as.Date(uniqueweek[i]))
+  if(tolower(retweet_data$username[1])%in%tolower(data$alter)){#remove loops
+    uniquesize<-append(uniquesize,length(unique(data$alter))-1)
+}else{
+    uniquesize<-append(uniquesize,length(unique(data$alter)))
+  }
+}
+uniquesize_month<-as.data.frame(cbind(uniquesize,as.character(uniqueweek)))
+uniquesize_month$V2 <- as.Date(uniquesize_month$V2)
+plot(uniquesize_month$V2,uniquesize_month$uniquesize,type="o")#similar pattern
+```
+##The number of new alters user starts to interact each unique week
+```{r}
+newaltersize<-vector()
+for (i in (1:length(uniqueweek))){
+  data<-subset(newdata,as.Date(newdata$V3)==as.Date(uniqueweek[i]))
+  previousdata<-subset(newdata,as.Date(newdata$V3)<as.Date(uniqueweek[i]))
+  alter<-unique(data$alter)
+  alter<-alter[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alter)))]
+  oldalter<-unique(previousdata$alter)
+  oldalter<-oldalter[!grepl(tolower(retweet_data$username[1]),unlist(tolower(oldalter)))]
+  newaltersize<-append(newaltersize,length(unique(alter[!(alter %in% oldalter)])))
+}
+newaltersize
+newaltersize_month<-as.data.frame(cbind(newaltersize,as.character(uniqueweek)))
+newaltersize_month$V2 <- as.Date(newaltersize_month$V2)
+plot(newaltersize_month$V2,newaltersize_month$newaltersize,type="o")
+````
+
+##Unique network size (excluding ego) for a weekly (can change to monthly by changing 6 to 29) sliding window with the granularity of "slider = n" day
+```{r}
+datelist<-seq(min(as.Date(retweet_data$tweet_created_at)), max(as.Date(retweet_data$tweet_created_at)), by="days")
+i = 1
+slider = 3 #sliding by 3 days. 
+uniquesize<-vector()
+date<-vector()
+
+while ((i + 6 + slider) < length(datelist)){
+  starting_date<-datelist[i]
+  stop_date<-starting_date+6
+  data<-subset(retweet_data,as.Date(retweet_data$tweet_created_at)>=starting_date)
+  data<-subset(data,as.Date(data$tweet_created_at)<=stop_date)
+  alter<-c(unlist(data$receiver))
+  alter<-alter[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alter)))]
+  date<-append(date,as.character(starting_date))
+  uniquesize<-append(uniquesize,length(unique(alter)))
+  i = i + slider
+}
+
+plot(as.Date(date),uniquesize,type="o")
+```
+##Unweighted jaccard similarity for a weekly (can change to monthly by changing 6 to 29) sliding window with the granularity of "slider = n" day
+```{r}
+jaccard <- function(a, b) {
+    intersection = length(intersect(a, b))
+    union = length(a) + length(b) - intersection
+    return (intersection/union)
+}
+
+datelist<-seq(min(as.Date(retweet_data$tweet_created_at)), max(as.Date(retweet_data$tweet_created_at)), by="days")
+i = 1
+slider = 7  
+jaccard_vector<-vector()
+date<-vector()
+
+while ((i + 6 + slider) < length(datelist)){
+  starting_datei<-datelist[i]
+  stop_datei<-datelist[i+6]
+  datai<-subset(retweet_data,as.Date(retweet_data$tweet_created_at)>=starting_datei)
+  datai<-subset(datai,as.Date(datai$tweet_created_at)<=stop_datei)
+  alteri<-c(unlist(datai$receiver))
+  alteri<-alteri[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alteri)))]
+  starting_datej<-datelist[i+slider]
+  stop_datej<-datelist[i+slider+6]
+  dataj<-subset(retweet_data,as.Date(retweet_data$tweet_created_at)>=starting_datej)
+  dataj<-subset(dataj,as.Date(dataj$tweet_created_at)<=stop_datej)
+  alterj<-c(unlist(dataj$receiver))
+  alterj<-alterj[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alterj)))]
+  allalter<-unique(append(alteri,alterj))
+  v1<-vector()
+  if(length(allalter)>0){#if both vectors are empty,no need to calculate jaccard similarity. datapoint will also be empty
+    for (k in (1:length(allalter))){
+      if(allalter[k]%in%alteri){
+        v1<-append(v1,1)
+      }else{
+        v1<-append(v1,0)
+      }
+    }
+    v2<-vector()
+    for (k in (1:length(allalter))){
+      if(allalter[k]%in%alterj){
+        v2<-append(v2,1)
+      }else{
+        v2<-append(v2,0)
+      }
+    }
+    jaccard_vector<-append(jaccard_vector,jaccard(v1,v2))
+    date<-append(date,as.character(starting_datei))
+  }
+  i = i + slider
+}
+
+plot(as.Date(date),jaccard_vector,type="o")
+
+```
+
+##unweighted jaccard similarity for each unique week
+
+```{r}
+uniqueweek<-unique(newdata$V3)
+jaccard_vector<-vector()
+date<-vector()
+for (i in (2:length(uniqueweek))){
+  datai<-subset(newdata,as.Date(newdata$V3)==as.Date(uniqueweek[i]))
+  alteri<-c(unlist(datai$alter))
+  alteri<-alteri[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alteri)))]
+  j<-i-1
+  dataj<-subset(newdata,as.Date(newdata$V3)==as.Date(uniqueweek[j]))
+  alterj<-c(unlist(dataj$alter))
+  alterj<-alterj[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alterj)))]
+  allalter<-unique(append(alteri,alterj))
+  v1<-vector()
+  if(length(allalter)>0){#if both vectors are empty,no need to calculate jaccard similarity. datapoint will also be empty
+    for (k in (1:length(allalter))){
+      if(allalter[k]%in%alteri){
+        v1<-append(v1,1)
+      }else{
+        v1<-append(v1,0)
+      }
+
+    v2<-vector()
+    for (k in (1:length(allalter))){
+      if(allalter[k]%in%alterj){
+        v2<-append(v2,1)
+      }else{
+        v2<-append(v2,0)
+      }
+    }
+    jaccard_vector<-append(jaccard_vector,jaccard(v1,v2))
+    date<-append(date,as.character(uniqueweek[i]))
+  }
+
+  }
+}
+
+plot(as.Date(date),jaccard_vector,type="o")
+
+```
+##Sliding Window Weighted Jaccard Similarity for a weekly (can change to monthly by changing 6 to 29) sliding window with the granularity of "slider = n" day
+```{r}
+jaccard_w <- function(a, b) {
+    num <- sum(sapply(1:length(a), function(i)(min(a[i],b[i]))))
+    den <- sum(sapply(1:length(a), function(i)(max(a[i],b[i]))))
+    return (num/den)
+}
+datelist<-seq(min(as.Date(retweet_data$tweet_created_at)), max(as.Date(retweet_data$tweet_created_at)), by="days")
+i = 1
+slider = 5 #sliding by 3 days. 
+jaccard_vector<-vector()
+date<-vector()
+
+while ((i + 6 + slider) < length(datelist)){
+  starting_datei<-datelist[i]
+  end_datei<-datelist[i + 6]
+  starting_datej<-datelist[i + slider]
+  end_datej<-datelist[i + 6 + slider]
+  datai<-subset(retweet_data,as.Date(retweet_data$tweet_created_at)>=starting_datej)
+  datai<-subset(datai,as.Date(datai$tweet_created_at)<=end_datei)
+  alteri<-c(unlist(datai$receiver))
+  alteri<-alteri[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alteri)))]
+  
+  dataj<-subset(retweet_data,as.Date(retweet_data$tweet_created_at)>=starting_datej)
+  dataj<-subset(dataj,as.Date(dataj$tweet_created_at)<=end_datej)
+  alterj<-c(unlist(dataj$receiver))
+  alterj<-alterj[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alterj)))]
+  allalter<-unique(append(alteri,alterj))
+  if(length((allalter))>0){
+    v1<-vector()
+    v2<-vector()
+    for (k in (1:length(allalter))){
+      if(allalter[k]%in%alteri){
+        v1<-append(v1,length(alteri[alteri==allalter[k]]))
+      }else{
+        v1<-append(v1,0)
+      }
+    }
+    for (k in (1:length(allalter))){
+      if(allalter[k]%in%alterj){
+        v2<-append(v2,length(alterj[alterj==allalter[k]]))
+      }else{
+        v2<-append(v2,0)
+      }
+    }
+  }
+  jaccard_vector<-append(jaccard_vector,jaccard_w(v1,v2))
+  date<-append(date,as.character(starting_datei))
+  i = i + slider
+  print(i)
+}
+plot(as.Date(date),jaccard_vector,type="o")
+```
+https://www.sg.ethz.ch/publications/2019/zingg2019what-is-the/entropy-21-00901.pdf
+From Josh:
+"entropy is kind of of proxy for diversity.  You could use it to measure the diversity of a person’s ego network over each time window.  Like this:
+
+Consider user A in time window 1.  User A mentions (or retweets, or whatever) four others users a certain number of times:
+
+B = 10
+C = 10
+D = 10
+E = 50
+
+Then in window 2, user A mentions (or retweets) four others, like this:
+
+J = 5
+K = 5
+L = 10
+M = 20
+
+Note that we don’t care who is being mentioned.  We’re just looking at the raw counts.
+
+Entropy is is just -sum(p*log2(p)) over all users. So,
+
+Window 1:  - [(.125 * -3) + (.125 * -3) +  (.125 * -3)+ (.5*-.678)] = 1.464
+Window 2:  -[(.125 * -3) + (.125 * -3) + (.25 * -2) + (.5*-1)] = 1.75
+
+This means that the diversity (i.e. randomness) of the users communication pattern is going up.  Note that for four alters, maximum entropy would be:
+
+ - [(.25*-2)+(.25*-2)+(.25*-2)+(.25*-2)] = 2
+
+Which means complete randomness or maximum diversity for this number of alters."
+
+##Entropy in unique week
+```{r}
+uniqueweek<-unique(newdata$V3)
+entropy_vector<-vector()
+date<-vector()
+for (i in (1:length(uniqueweek))){
+  data<-subset(newdata,as.Date(newdata$V3)==as.Date(uniqueweek[i]))
+  alter<-c(unlist(data$alter))
+  alter<-alter[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alter)))]
+  if(length(alter)>0){
+     freq_table<-as.data.frame(table(alter))
+    entropy<-(-sum(sapply(1:length(freq_table$a),function(x)((freq_table$Freq[x]/sum(freq_table$Freq))*log2(freq_table$Freq[x]/sum(freq_table$Freq))))))
+    entropy_vector<-append(entropy_vector,entropy)
+    date<-append(date,as.character(uniqueweek[i]))
+  }
+ 
+}
+plot(as.Date(date),entropy_vector,type="o")
+```
+##Entropy in a sliding weekly window
+
+```{r}
+datelist<-seq(min(as.Date(retweet_data$tweet_created_at)), max(as.Date(retweet_data$tweet_created_at)), by="days")
+i = 1
+slider = 5 
+entropy_vector<-vector()
+date<-vector()
+
+while ((i + 6 + slider) < length(datelist)){
+  starting_datei<-datelist[i]
+  stop_datei<-datelist[i]+6
+  datai<-subset(retweet_data,as.Date(retweet_data$tweet_created_at)>=starting_datei)
+  datai<-subset(datai,as.Date(datai$tweet_created_at)<=stop_datei)
+  alter<-c(unlist(datai$receiver))
+  alter<-alter[!grepl(tolower(retweet_data$username[1]),unlist(tolower(alter)))]#this line was wrong, now is fixed
+  if(length(alter)>0){
+    freq_table<-as.data.frame(table(alter))
+    entropy<-(-sum(sapply(1:length(freq_table$a),function(x)((freq_table$Freq[x]/sum(freq_table$Freq))*log2(freq_table$Freq[x]/sum(freq_table$Freq))))))
+    entropy_vector<-append(entropy_vector,entropy)
+    date<-append(date,as.character(starting_datei))
+  }
+  i = i + slider
+}
+
+
+plot(as.Date(date),entropy_vector,type="o")
+```
+
+Another alternative method maybe we could try: https://www.emerald.com/insight/content/doi/10.1108/MD-05-2019-0597/full/html#sec003
+Ego-network stability reflects the extent to which the composition of the focal organization's ego network remains unchanged from one period to the next (Kumar and Zaheer, 2019). 
